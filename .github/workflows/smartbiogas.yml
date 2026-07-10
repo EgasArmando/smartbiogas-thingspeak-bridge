@@ -2,15 +2,22 @@ name: Smart Biogas to ThingSpeak
 
 on:
   schedule:
-    # Runs every 15 minutes using UTC time
-    - cron: "*/15 * * * *"
+    # Runs at minute 00, 20 and 40 of every hour, in UTC
+    - cron: "0,20,40 * * * *"
 
-  # Allows you to run it manually from the GitHub Actions tab
+  # Allows manual testing from the GitHub Actions tab
   workflow_dispatch:
+
+concurrency:
+  group: smartbiogas-thingspeak-sync
+  cancel-in-progress: false
 
 jobs:
   sync-smartbiogas:
     runs-on: ubuntu-latest
+
+    # Prevent a failed request from running indefinitely
+    timeout-minutes: 10
 
     steps:
       - name: Download repository files
@@ -22,7 +29,14 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Show synchronized UTC time
+        run: |
+          echo "GitHub runner UTC time:"
+          date -u
 
       - name: Run Smart Biogas to ThingSpeak bridge
         env:
