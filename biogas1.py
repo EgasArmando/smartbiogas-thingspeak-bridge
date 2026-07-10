@@ -2,6 +2,7 @@ import os
 import math
 import requests
 from datetime import datetime, timedelta, timezone
+
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -25,31 +26,33 @@ SMARTBIOGAS_URL = (
     "https://api.smartbiogas.io/api/v1/gas-meter-reports"
 )
 
-THINGSPEAK_UPDATE_URL = "https://api.thingspeak.com/update"
+THINGSPEAK_UPDATE_URL = (
+    "https://api.thingspeak.com/update"
+)
 
-# Search Smart Biogas records from the previous 24 hours
+# Search Smart Biogas records from the previous 24 hours.
 LOOKBACK_HOURS = 24
 
-# Do not upload a source record older than this threshold.
-# The workflow runs every 20 minutes, so 60 minutes allows
-# tolerance for delayed sensor or GitHub execution.
+# Reject records older than 60 minutes.
+# The GitHub workflow runs every 20 minutes, so this allows
+# some tolerance for delayed sensor updates or workflow starts.
 MAX_RECORD_AGE_MINUTES = 60
 
-# Reject timestamps more than five minutes in the future.
+# Reject timestamps that are more than five minutes in the future.
 MAX_FUTURE_TIME_MINUTES = 5
 
-# Require at least one valid measurement.
+# At least one valid measurement must be present.
 MINIMUM_VALID_FIELDS = 1
 
 
 # ============================================================
-# 3. HTTP SESSION WITH AUTOMATIC RETRIES
+# 3. HTTP SESSION WITH RETRIES
 # ============================================================
 
 def create_http_session():
     """
-    Create a reusable HTTP session with retries for temporary
-    network and server failures.
+    Create a reusable HTTP session with automatic retries for
+    temporary server and network failures.
     """
 
     retry_strategy = Retry(
@@ -57,11 +60,22 @@ def create_http_session():
         connect=4,
         read=4,
         backoff_factor=2,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "POST"],
+        status_forcelist=[
+            429,
+            500,
+            502,
+            503,
+            504,
+        ],
+        allowed_methods=[
+            "GET",
+            "POST",
+        ],
     )
 
-    adapter = HTTPAdapter(max_retries=retry_strategy)
+    adapter = HTTPAdapter(
+        max_retries=retry_strategy
+    )
 
     session = requests.Session()
     session.mount("https://", adapter)
@@ -79,7 +93,7 @@ HTTP_SESSION = create_http_session()
 
 def require_env(name, value):
     """
-    Ensure that a required environment variable is available.
+    Ensure that a required environment variable exists.
     """
 
     if value is None or not str(value).strip():
@@ -101,7 +115,7 @@ def parse_timestamp(value):
     Parse an ISO 8601 timestamp and return a timezone-aware
     UTC datetime.
 
-    Examples accepted:
+    Examples:
         2026-07-10T10:40:00Z
         2026-07-10T10:40:00+00:00
         2026-07-10T10:40:00
@@ -121,13 +135,19 @@ def parse_timestamp(value):
             "+00:00",
         )
 
-        parsed = datetime.fromisoformat(timestamp_text)
+        parsed = datetime.fromisoformat(
+            timestamp_text
+        )
 
         # If the API gives no timezone, assume UTC.
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(
+                tzinfo=timezone.utc
+            )
 
-        return parsed.astimezone(timezone.utc)
+        return parsed.astimezone(
+            timezone.utc
+        )
 
     except (ValueError, TypeError):
         return None
@@ -135,7 +155,7 @@ def parse_timestamp(value):
 
 def normalize_timestamp(value):
     """
-    Return a consistent ISO 8601 UTC timestamp.
+    Convert a timestamp to a consistent UTC ISO 8601 string.
     """
 
     parsed = parse_timestamp(value)
@@ -143,12 +163,14 @@ def normalize_timestamp(value):
     if parsed is None:
         return None
 
-    return parsed.isoformat(timespec="seconds")
+    return parsed.isoformat(
+        timespec="seconds"
+    )
 
 
 def is_valid_number(value):
     """
-    Return True when a value is a finite numeric measurement.
+    Return True when a value is a valid finite number.
 
     Important:
         0 is valid.
@@ -165,12 +187,18 @@ def is_valid_number(value):
     if isinstance(value, bool):
         return False
 
-    if isinstance(value, str) and not value.strip():
+    if (
+        isinstance(value, str)
+        and not value.strip()
+    ):
         return False
 
     try:
         numeric_value = float(value)
-        return math.isfinite(numeric_value)
+
+        return math.isfinite(
+            numeric_value
+        )
 
     except (TypeError, ValueError):
         return False
@@ -178,13 +206,15 @@ def is_valid_number(value):
 
 def get_measurement_fields(reading):
     """
-    Map Smart Biogas variables to ThingSpeak fields.
+    Map Smart Biogas measurements to ThingSpeak fields.
     """
 
     return {
         "field1": reading.get("flowLph"),
         "field2": reading.get("volumeL"),
-        "field3": reading.get("staticPressurePa"),
+        "field3": reading.get(
+            "staticPressurePa"
+        ),
         "field4": reading.get("batteryV"),
         "field5": reading.get("solarV"),
         "field6": reading.get("rssiDb"),
@@ -193,10 +223,12 @@ def get_measurement_fields(reading):
 
 def count_valid_measurements(reading):
     """
-    Count the number of valid sensor measurements in a record.
+    Count valid measurements in a Smart Biogas record.
     """
 
-    fields = get_measurement_fields(reading)
+    fields = get_measurement_fields(
+        reading
+    )
 
     return sum(
         is_valid_number(value)
@@ -213,19 +245,23 @@ def validate_reading(reading):
     Validate a Smart Biogas record.
 
     Identical measurements at different timestamps are valid.
-    Duplicate detection is based on timestamp, not field values.
+    Duplicate detection is based only on the source timestamp.
     """
 
     if not isinstance(reading, dict):
-        return False, "The Smart Biogas record is invalid."
+        return (
+            False,
+            "The Smart Biogas record is invalid.",
+        )
 
     record_time = parse_timestamp(
         reading.get("timestamp")
     )
 
     if record_time is None:
-        return False, (
-            "The record does not contain a valid timestamp."
+        return (
+            False,
+            "The record does not contain a valid timestamp.",
         )
 
     current_time = utc_now()
@@ -234,9 +270,13 @@ def validate_reading(reading):
     if record_age < timedelta(
         minutes=-MAX_FUTURE_TIME_MINUTES
     ):
-        return False, (
-            "The record timestamp is unexpectedly in the future: "
-            f"{normalize_timestamp(record_time)}"
+        return (
+            False,
+            (
+                "The record timestamp is unexpectedly "
+                f"in the future: "
+                f"{normalize_timestamp(record_time)}"
+            ),
         )
 
     if record_age > timedelta(
@@ -246,10 +286,13 @@ def validate_reading(reading):
             record_age.total_seconds() / 60
         )
 
-        return False, (
-            f"The newest usable record is "
-            f"{age_minutes:.1f} minutes old. "
-            "The meter may be offline."
+        return (
+            False,
+            (
+                f"The newest usable record is "
+                f"{age_minutes:.1f} minutes old. "
+                "The meter may be offline."
+            ),
         )
 
     valid_measurement_count = (
@@ -260,13 +303,21 @@ def validate_reading(reading):
         valid_measurement_count
         < MINIMUM_VALID_FIELDS
     ):
-        return False, (
-            "The record contains no valid sensor measurements."
+        return (
+            False,
+            (
+                "The record contains no valid "
+                "sensor measurements."
+            ),
         )
 
-    return True, (
-        f"Record is valid with "
-        f"{valid_measurement_count} valid measurement field(s)."
+    return (
+        True,
+        (
+            f"Record is valid with "
+            f"{valid_measurement_count} valid "
+            "measurement field(s)."
+        ),
     )
 
 
@@ -277,11 +328,9 @@ def validate_reading(reading):
 def get_latest_biogas_reading():
     """
     Retrieve Smart Biogas records and select the newest record
-    that has:
+    containing:
         - a valid timestamp
         - at least one valid sensor measurement
-
-    The record is then checked for freshness.
     """
 
     require_env(
@@ -290,6 +339,7 @@ def get_latest_biogas_reading():
     )
 
     end_at = utc_now()
+
     start_at = end_at - timedelta(
         hours=LOOKBACK_HOURS
     )
@@ -309,14 +359,10 @@ def get_latest_biogas_reading():
         "Accept": "application/json",
     }
 
-    print("=" * 70)
-    print("SMART BIOGAS TO THINGSPEAK SYNCHRONIZATION")
-    print("=" * 70)
+    print("-" * 70)
+    print("CONNECTING TO SMART BIOGAS")
+    print("-" * 70)
     print(f"Meter ID: {METER_ID}")
-    print(
-        "GitHub execution time UTC: "
-        f"{end_at.isoformat(timespec='seconds')}"
-    )
     print(
         "Search start UTC: "
         f"{start_at.isoformat(timespec='seconds')}"
@@ -340,6 +386,7 @@ def get_latest_biogas_reading():
         )
 
         response.raise_for_status()
+
         data = response.json()
 
     except requests.RequestException as error:
@@ -350,7 +397,8 @@ def get_latest_biogas_reading():
 
     except ValueError as error:
         print(
-            f"Smart Biogas returned invalid JSON: {error}"
+            "Smart Biogas returned invalid JSON: "
+            f"{error}"
         )
         return None
 
@@ -389,9 +437,12 @@ def get_latest_biogas_reading():
             count_valid_measurements(record)
         )
 
-        # Do not consider records containing only null,
-        # empty, NaN or otherwise invalid measurements.
-        if valid_measurement_count < MINIMUM_VALID_FIELDS:
+        # Ignore records containing only null, empty,
+        # NaN or otherwise invalid measurements.
+        if (
+            valid_measurement_count
+            < MINIMUM_VALID_FIELDS
+        ):
             continue
 
         usable_records.append(
@@ -404,18 +455,24 @@ def get_latest_biogas_reading():
 
     if not usable_records:
         print(
-            "No Smart Biogas records contain both a valid "
-            "timestamp and a valid sensor measurement."
+            "No Smart Biogas records contain both "
+            "a valid timestamp and a valid measurement."
         )
         return None
 
-    record_time, latest_record, valid_count = max(
+    (
+        record_time,
+        latest_record,
+        valid_count,
+    ) = max(
         usable_records,
         key=lambda item: item[0],
     )
 
     latest_record["timestamp"] = (
-        record_time.isoformat(timespec="seconds")
+        record_time.isoformat(
+            timespec="seconds"
+        )
     )
 
     print(
@@ -423,7 +480,7 @@ def get_latest_biogas_reading():
         f"{latest_record['timestamp']}"
     )
     print(
-        f"Valid measurements in newest record: "
+        "Valid measurements in newest record: "
         f"{valid_count}"
     )
 
@@ -432,31 +489,33 @@ def get_latest_biogas_reading():
     )
 
     if not valid:
-        print(f"Record rejected: {reason}")
+        print(
+            f"Record rejected: {reason}"
+        )
         return None
 
-    print(f"Record validation: {reason}")
+    print(
+        f"Record validation: {reason}"
+    )
 
     return latest_record
 
 
 # ============================================================
-# 7. READ THE LAST THINGSPEAK RECORD
+# 7. READ LAST THINGSPEAK RECORD
 # ============================================================
 
 def get_last_thingspeak_timestamp():
     """
-    Read the source timestamp stored in the status field of the
-    latest ThingSpeak entry.
-
-    This timestamp is used to determine whether the Smart Biogas
-    source record has already been stored.
+    Read the Smart Biogas source timestamp stored in the
+    status field of the latest ThingSpeak entry.
     """
 
     if not THINGSPEAK_CHANNEL_ID:
         print(
             "THINGSPEAK_CHANNEL_ID is missing. "
-            "Duplicate and older-record protection cannot run."
+            "Duplicate and older-record protection "
+            "cannot run."
         )
         return None
 
@@ -488,34 +547,34 @@ def get_last_thingspeak_timestamp():
 
         if response.status_code != 200:
             print(
-                "Could not read the latest ThingSpeak entry: "
+                "Could not read the latest "
+                "ThingSpeak entry: "
                 f"{response.text}"
             )
             return None
 
         latest_entry = response.json()
 
-        status_timestamp = latest_entry.get(
-            "status"
+        status_timestamp = (
+            latest_entry.get("status")
         )
 
-        normalized_timestamp = normalize_timestamp(
+        return normalize_timestamp(
             status_timestamp
         )
 
-        return normalized_timestamp
-
     except requests.RequestException as error:
         print(
-            "ThingSpeak duplicate-check request failed: "
-            f"{error}"
+            "ThingSpeak duplicate-check request "
+            f"failed: {error}"
         )
         return None
 
     except ValueError as error:
         print(
-            "ThingSpeak returned invalid JSON during the "
-            f"duplicate check: {error}"
+            "ThingSpeak returned invalid JSON "
+            "during duplicate checking: "
+            f"{error}"
         )
         return None
 
@@ -526,14 +585,14 @@ def get_last_thingspeak_timestamp():
 
 def upload_to_thingspeak(reading):
     """
-    Upload one valid and newer Smart Biogas record to ThingSpeak.
+    Upload one valid and newer Smart Biogas record.
 
     A record is skipped when:
-        - its timestamp is missing
+        - the timestamp is missing
         - all measurements are invalid
-        - it has the same timestamp as the last ThingSpeak entry
-        - it is older than the last ThingSpeak source timestamp
-        - it is too old relative to the current UTC time
+        - it has the same timestamp as the last entry
+        - it is older than the last ThingSpeak source record
+        - it is stale relative to the current UTC time
     """
 
     require_env(
@@ -541,10 +600,14 @@ def upload_to_thingspeak(reading):
         THINGSPEAK_WRITE_KEY,
     )
 
-    valid, reason = validate_reading(reading)
+    valid, reason = validate_reading(
+        reading
+    )
 
     if not valid:
-        print(f"Upload cancelled: {reason}")
+        print(
+            f"Upload cancelled: {reason}"
+        )
         return False
 
     current_timestamp = normalize_timestamp(
@@ -557,15 +620,17 @@ def upload_to_thingspeak(reading):
 
     if current_record_time is None:
         print(
-            "Upload cancelled because the source timestamp "
-            "could not be parsed."
+            "Upload cancelled because the source "
+            "timestamp could not be parsed."
         )
         return False
 
     print("-" * 70)
     print("LATEST SMART BIOGAS RECORD")
     print("-" * 70)
-    print(f"Timestamp: {current_timestamp}")
+    print(
+        f"Timestamp: {current_timestamp}"
+    )
     print(
         f"Flow: {reading.get('flowLph')} L/h"
     )
@@ -603,23 +668,26 @@ def upload_to_thingspeak(reading):
         f"{last_uploaded_timestamp}"
     )
 
-    # Skip the same timestamp and any older source timestamp.
+    # Skip the same timestamp and any older timestamp.
     # Measurement values are not used for duplicate detection.
     if (
         last_uploaded_time is not None
         and current_record_time
         <= last_uploaded_time
     ):
-        if current_record_time == last_uploaded_time:
+        if (
+            current_record_time
+            == last_uploaded_time
+        ):
             print(
-                "This exact Smart Biogas source record has "
+                "This exact Smart Biogas record has "
                 "already been uploaded."
             )
         else:
             print(
-                "The Smart Biogas API returned a record older "
-                "than the latest record already stored in "
-                "ThingSpeak."
+                "The Smart Biogas API returned a "
+                "record older than the latest record "
+                "already stored in ThingSpeak."
             )
 
         print("Upload skipped.")
@@ -631,26 +699,28 @@ def upload_to_thingspeak(reading):
 
     valid_fields = {
         field_name: value
-        for field_name, value in all_fields.items()
+        for field_name, value
+        in all_fields.items()
         if is_valid_number(value)
     }
 
     if not valid_fields:
         print(
-            "No valid sensor measurements are available. "
-            "Upload skipped."
+            "No valid sensor measurements are "
+            "available. Upload skipped."
         )
         return False
 
     payload = {
-        "api_key": THINGSPEAK_WRITE_KEY.strip(),
+        "api_key": (
+            THINGSPEAK_WRITE_KEY.strip()
+        ),
 
-        # Store the actual Smart Biogas measurement time,
-        # rather than the GitHub workflow execution time.
+        # Preserve the Smart Biogas source time.
         "created_at": current_timestamp,
 
-        # Save the source timestamp for duplicate and
-        # chronological-order checking during the next run.
+        # Store source timestamp for duplicate and
+        # chronological-order checking.
         "status": current_timestamp,
 
         **valid_fields,
@@ -699,7 +769,8 @@ def upload_to_thingspeak(reading):
 
     if entry_id and entry_id != "0":
         print(
-            "Pipeline synchronization completed successfully."
+            "Pipeline synchronization completed "
+            "successfully."
         )
         print(
             f"ThingSpeak entry ID: {entry_id}"
@@ -720,10 +791,18 @@ def main():
     """
     Run one synchronization cycle.
 
-    GitHub Actions controls the 20-minute schedule. Therefore,
-    this script runs once and exits. It must not contain an
-    infinite loop or a 20-minute sleep.
+    GitHub Actions controls the 20-minute schedule.
+    This script runs once and exits.
     """
+
+    print("=" * 70)
+    print("SMART BIOGAS SYNCHRONIZATION")
+    print("=" * 70)
+    print(
+        "Execution UTC: "
+        f"{utc_now().isoformat(timespec='seconds')}"
+    )
+    print("=" * 70)
 
     try:
         reading = get_latest_biogas_reading()
@@ -731,12 +810,12 @@ def main():
         if reading is None:
             print("-" * 70)
             print(
-                "No suitable new Smart Biogas record is "
-                "available."
+                "No suitable new Smart Biogas "
+                "record is available."
             )
             print(
-                "Workflow completed without creating a "
-                "ThingSpeak entry."
+                "Workflow completed without creating "
+                "a ThingSpeak entry."
             )
             return
 
@@ -744,20 +823,36 @@ def main():
             reading
         )
 
-        if not uploaded:
+        if uploaded:
             print("-" * 70)
             print(
-                "Workflow completed without creating a new "
-                "ThingSpeak entry."
+                "A new Smart Biogas record was "
+                "uploaded successfully."
+            )
+        else:
+            print("-" * 70)
+            print(
+                "No new ThingSpeak entry was created."
             )
 
     except Exception as error:
+        print("-" * 70)
         print(
-            f"Unexpected synchronization error: {error}"
+            f"Synchronization failed: {error}"
         )
 
-        # Raise the error so GitHub Actions marks the job as failed.
+        # Raise the error so GitHub Actions marks
+        # the workflow as failed.
         raise
+
+    finally:
+        print("=" * 70)
+        print("Synchronization finished.")
+        print(
+            "Finish UTC: "
+            f"{utc_now().isoformat(timespec='seconds')}"
+        )
+        print("=" * 70)
 
 
 if __name__ == "__main__":
